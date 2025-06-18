@@ -7,15 +7,18 @@ This repository contains a complete setup for running TORCS with the SCR (Simula
 - **TORCS 1.3.4** with SCR patch applied
 - **Docker containers** for easy deployment
 - **SCR C++ client** with SimpleDriver implementation
-- **Fixed headless operation** using Xvfb virtual display
+- **headless operation** using Xvfb virtual display
+
+## What's not included
+- Full TORCS source code (download 1.3.4 from sourceforge and drop the tarball here)
 
 ## Quick Start
 
 ### 1. Build the Docker Images
 
 ```bash
-# Build the fixed TORCS container (includes Xvfb for headless operation)
-docker build -f Dockerfile.fixed -t torcs-fixed .
+# Build the TORCS container (includes Xvfb for headless operation)
+docker build -f Dockerfile -t torcs-server .
 ```
 
 ### 2. Build the SCR Client
@@ -30,7 +33,7 @@ make clean && make
 #### Terminal 1: Start the TORCS Server
 ```bash
 # Start server with UDP port 3001 exposed
-docker run --rm -d -p 3001:3001/udp --name torcs-server torcs-fixed:latest
+docker run --rm -d -p 3001:3001/udp --name torcs-server torcs-server:latest
 
 # Wait for server initialization
 sleep 10
