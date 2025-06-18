@@ -11,6 +11,7 @@ This repository contains a complete setup for running TORCS with the SCR (Simula
 
 ## What's not included
 - Full TORCS source code (download 1.3.4 from sourceforge and drop the tarball here)
+- SCR patch (download from the SCR GitHub repository and drop the tarball here)
 
 ## Quick Start
 
