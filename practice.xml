@@ -1,0 +1,20 @@
+<!-- practice.xml -->
+<params name="Practice Race">
+  <section name="Tracks">
+    <attstr name="name" val="aalborg"/>
+    <attstr name="category" val="road"/>
+  </section>
+
+  <section name="Drivers">
+    <section name="1">
+      <attnum name="idx" val="1"/>
+      <attstr name="module" val="scr_server"/>
+    </section>
+  </section>
+
+  <section name="Race">
+    <attnum name="distance" unit="km" val="0"/>
+    <attnum name="laps" val="1"/>
+    <attstr name="display mode" val="results only"/>
+  </section>
+</params>
