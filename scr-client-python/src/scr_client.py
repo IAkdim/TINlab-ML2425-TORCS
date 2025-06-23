@@ -59,6 +59,7 @@ class SCRClient:
             return False
             
         try:
+            print(f"DEBUG: Sending to {self.server_address}: {message[:50]}...")
             self.socket.sendto(message.encode(), self.server_address)
             return True
         except Exception as e:

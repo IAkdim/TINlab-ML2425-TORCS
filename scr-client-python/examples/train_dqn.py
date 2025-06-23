@@ -23,60 +23,45 @@ def train_dqn_agent(host="localhost", port=3001, num_episodes=50):
     driver = MLDriver(model_type="dqn", model_path="models/dqn_driver.pth")
     driver.set_training_mode(True)
     
-    # Create client
-    client = SCRClient(host, port, "DQN_TRAINER")
-    
     # Training parameters
     max_steps_per_episode = 2000
     track_name = "aalborg"
-    stage = Stage.PRACTICE
+    stage = Stage.WARMUP
     
     # Create models directory
     os.makedirs("models", exist_ok=True)
     
-    # Training loop
+    # Training loop - run all episodes in one client session
     start_time = time.time()
     episode_rewards = []
     
-    for episode in range(num_episodes):
-        print(f"\n=== Episode {episode + 1}/{num_episodes} ===")
+    print(f"Starting training for {num_episodes} episodes...")
+    
+    # Create client with longer timeout
+    client = SCRClient(host, port, "DQN_TRAINER", timeout=10.0)
+    
+    try:
+        # Set up episode tracking
+        driver.episode_count = 0
+        driver.total_episodes = num_episodes
         
-        # Run single episode
-        try:
-            client.run(driver, max_episodes=1, max_steps=max_steps_per_episode, 
-                      track_name=track_name, stage=stage)
-            
-            # Track episode reward (basic implementation)
-            episode_rewards.append(driver.episode_reward)
-            
-            # Print progress
-            if len(episode_rewards) >= 10:
-                avg_reward = sum(episode_rewards[-10:]) / 10
-                print(f"Episode {episode + 1}: Reward = {driver.episode_reward:.2f}, "
-                      f"Avg (last 10) = {avg_reward:.2f}")
-            else:
-                print(f"Episode {episode + 1}: Reward = {driver.episode_reward:.2f}")
-            
-            # Save model periodically
-            if (episode + 1) % 10 == 0:
-                model_path = f"models/dqn_driver_episode_{episode + 1}.pth"
-                driver.save_model(model_path)
-                print(f"Model saved to {model_path}")
+        # Run all episodes at once - TORCS will call on_restart() between episodes
+        client.run(driver, max_episodes=num_episodes, max_steps=max_steps_per_episode, 
+                  track_name=track_name, stage=stage)
         
-        except Exception as e:
-            print(f"Error in episode {episode + 1}: {e}")
-            continue
+        print(f"Training completed successfully!")
         
-        # Brief pause between episodes
-        time.sleep(1)
+    except Exception as e:
+        print(f"Error during training: {e}")
+        
+    except KeyboardInterrupt:
+        print("\nTraining interrupted by user")
     
     # Final model save
     driver.save_model("models/dqn_driver_final.pth")
     
     training_time = time.time() - start_time
     print(f"\nTraining completed in {training_time:.1f} seconds")
-    print(f"Average reward: {sum(episode_rewards) / len(episode_rewards):.2f}")
-    print(f"Best episode reward: {max(episode_rewards):.2f}")
     
     return episode_rewards
 
@@ -90,13 +75,13 @@ def evaluate_agent(model_path, host="localhost", port=3001, num_episodes=5):
     driver = MLDriver(model_type="dqn", model_path=model_path)
     driver.set_training_mode(False)  # Disable exploration
     
-    # Create client
-    client = SCRClient(host, port, "DQN_EVAL")
+    # Create client with longer timeout
+    client = SCRClient(host, port, "DQN_EVAL", timeout=5.0)
     
     # Evaluation parameters
     max_steps_per_episode = 3000
     track_name = "aalborg"
-    stage = Stage.RACE
+    stage = Stage.WARMUP
     
     episode_rewards = []
     

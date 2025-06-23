@@ -144,6 +144,11 @@ class MLDriver(BaseDriver):
         
         self._initialize_model()
     
+    def init(self):
+        """Initialize track sensor angles - must match working simple driver."""
+        # Use the same angles as the working simple driver
+        return [-90, -75, -60, -45, -30, -20, -15, -10, -5, 0, 5, 10, 15, 20, 30, 45, 60, 75, 90]
+    
     def _initialize_model(self):
         """Initialize the ML model based on type."""
         if self.model_type == "neural":
@@ -293,7 +298,20 @@ class MLDriver(BaseDriver):
     def on_restart(self):
         """Called when episode restarts."""
         if self.training:
-            print(f"Episode finished. Reward: {self.episode_reward:.2f}, Steps: {self.step_count}")
+            # Track episode completion
+            episode_num = getattr(self, 'episode_count', 0) + 1
+            self.episode_count = episode_num
+            total_episodes = getattr(self, 'total_episodes', 1)
+            
+            print(f"Episode {episode_num}/{total_episodes} finished. Reward: {self.episode_reward:.2f}, Steps: {self.step_count}")
+            
+            # Save model periodically
+            if episode_num % 10 == 0:
+                model_path = f"models/dqn_driver_episode_{episode_num}.pth"
+                self.save_model(model_path)
+                print(f"Model saved to {model_path}")
+            
+            # Reset for next episode
             self.episode_reward = 0
             self.step_count = 0
             self.prev_state = None
