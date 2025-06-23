@@ -17,7 +17,7 @@ import os
 
 class DQN(nn.Module):
     """Simple DQN network."""
-    def __init__(self, state_size=29, action_size=9, hidden_size=64):
+    def __init__(self, state_size=29, action_size=14, hidden_size=64):
         super(DQN, self).__init__()
         self.network = nn.Sequential(
             nn.Linear(state_size, hidden_size),
@@ -33,7 +33,7 @@ class DQN(nn.Module):
 
 class DQNAgent:
     """DQN agent for TORCS."""
-    def __init__(self, state_size=29, action_size=9, lr=0.001):
+    def __init__(self, state_size=29, action_size=14, lr=0.001):
         self.state_size = state_size
         self.action_size = action_size
         self.memory = deque(maxlen=10000)
@@ -48,17 +48,29 @@ class DQNAgent:
         # Copy weights to target network
         self.update_target_network()
         
-        # Discrete actions: [steer, accel, brake]
+        # Improved discrete actions: [steer, accel, brake]
         self.actions = [
-            [-0.5, 0.8, 0.0],  # Turn left + accelerate
-            [-0.2, 0.8, 0.0],  # Slight left + accelerate  
-            [0.0, 0.8, 0.0],   # Straight + accelerate
-            [0.2, 0.8, 0.0],   # Slight right + accelerate
-            [0.5, 0.8, 0.0],   # Turn right + accelerate
-            [-0.5, 0.0, 0.3],  # Turn left + brake
-            [0.0, 0.0, 0.3],   # Straight + brake
-            [0.5, 0.0, 0.3],   # Turn right + brake
-            [0.0, 0.0, 0.0],   # Coast
+            # High-speed actions
+            [-0.3, 1.0, 0.0],   # Left + full accel
+            [-0.1, 1.0, 0.0],   # Slight left + full accel
+            [0.0, 1.0, 0.0],    # Straight + full accel
+            [0.1, 1.0, 0.0],    # Slight right + full accel
+            [0.3, 1.0, 0.0],    # Right + full accel
+            
+            # Medium-speed actions
+            [-0.5, 0.5, 0.0],   # Sharp left + medium accel
+            [0.0, 0.5, 0.0],    # Straight + medium accel
+            [0.5, 0.5, 0.0],    # Sharp right + medium accel
+            
+            # Braking actions
+            [-0.2, 0.0, 0.5],   # Left + brake
+            [0.0, 0.0, 0.5],    # Straight + brake
+            [0.2, 0.0, 0.5],    # Right + brake
+            
+            # Emergency actions
+            [-0.8, 0.0, 1.0],   # Sharp left + full brake
+            [0.8, 0.0, 1.0],    # Sharp right + full brake
+            [0.0, 0.0, 0.0],    # Coast
         ]
     
     def remember(self, state, action, reward, next_state, done):
@@ -156,29 +168,75 @@ def parse_sensors(sensor_string):
         vector.append(0.0)
     vector = vector[:29]  # Truncate if too long
     
-    return np.array(vector, dtype=np.float32)
+    return np.array(vector, dtype=np.float32), state
 
 
-def calculate_reward(prev_state, current_state):
-    """Calculate reward for DQN training."""
+def calculate_reward(prev_state, current_state, prev_raw_state, current_raw_state):
+    """Calculate improved reward for DQN training."""
     reward = 0.0
     
-    # Speed reward
+    # Extract raw values for better reward calculation
     speed = current_state[1]  # speedX
-    reward += min(speed / 50.0, 1.0) * 0.1
+    track_pos = current_state[3]  # trackPos
+    damage = current_raw_state.get('damage', 0)
+    prev_damage = prev_raw_state.get('damage', 0) if prev_raw_state else 0
     
-    # Track position penalty
-    track_pos = abs(current_state[3])  # trackPos
-    if track_pos > 1.0:
-        reward -= 2.0  # Off track
+    # 1. PROGRESS REWARD (most important)
+    if prev_raw_state:
+        distance_progress = current_raw_state.get('distRaced', 0) - prev_raw_state.get('distRaced', 0)
+        reward += distance_progress * 0.1  # Big reward for forward progress
+    
+    # 2. SPEED REWARD (encourage going fast)
+    if abs(track_pos) < 1.0:  # Only reward speed when on track
+        speed_reward = min(speed / 30.0, 1.0) * 2.0  # Max +2.0 for high speed
+        reward += speed_reward
+    
+    # 3. TRACK POSITION REWARD (stay in center)
+    if abs(track_pos) < 1.0:
+        center_reward = (1.0 - abs(track_pos)) * 1.0  # Max +1.0 for center
+        reward += center_reward
     else:
-        reward += (1.0 - track_pos) * 0.1
+        # Moderate penalty for going off track (since we don't end episodes early)
+        reward -= 2.0
     
-    # Track sensor reward (avoid walls)
+    # 4. DAMAGE PENALTY (avoid crashes)
+    if damage > prev_damage:
+        damage_increase = damage - prev_damage
+        reward -= damage_increase * 0.1  # Penalty for new damage
+    
+    # 5. WALL AVOIDANCE (don't get too close)
     track_sensors = current_state[7:26]  # 19 track sensors
     min_distance = min(track_sensors)
-    if min_distance < 0.1:
-        reward -= 1.0  # Very close to wall
+    if min_distance < 0.05:  # Very close to wall
+        reward -= 2.0
+    elif min_distance < 0.1:  # Close to wall
+        reward -= 0.5
+    
+    # 6. BACKWARDS PENALTY (don't go backwards)
+    if speed < -1.0:
+        reward -= 2.0
+    
+    # 7. RECOVERY REWARD (getting back on track)
+    if prev_raw_state:
+        prev_track_pos = abs(prev_state[3])
+        current_track_pos = abs(track_pos)
+        if prev_track_pos > 1.0 and current_track_pos < prev_track_pos:
+            # Reward for getting closer to track
+            reward += (prev_track_pos - current_track_pos) * 5.0
+    
+    # 8. LAP COMPLETION BONUS
+    if prev_raw_state:
+        current_lap_time = current_raw_state.get('curLapTime', 0)
+        prev_lap_time = prev_raw_state.get('curLapTime', 0)
+        
+        # If lap time reset to 0, we completed a lap
+        if prev_lap_time > 10.0 and current_lap_time < 5.0:
+            reward += 100.0  # Huge bonus for completing lap
+            print(f"LAP COMPLETED! Bonus: +100.0")
+    
+    # 9. STUCK DETECTION (not moving)
+    if abs(speed) < 0.1 and abs(track_pos) < 1.0:
+        reward -= 0.2  # Small penalty for being stuck
     
     return reward
 
@@ -205,7 +263,7 @@ def main():
     
     # Training parameters
     num_episodes = 50
-    max_steps = 2000
+    max_steps = 10000
     
     # Socket setup
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -258,6 +316,7 @@ def main():
             episode_reward = 0
             prev_state = None
             prev_action = None
+            prev_raw_state = None
             
             while step_count < max_steps:
                 # Receive sensor data
@@ -281,7 +340,7 @@ def main():
                     break
                 
                 # Parse state
-                current_state = parse_sensors(sensors)
+                current_state, current_raw_state = parse_sensors(sensors)
                 
                 # Get action from agent
                 action_idx = agent.act(current_state, training=True)
@@ -306,10 +365,33 @@ def main():
                 
                 # Calculate reward and store experience
                 if prev_state is not None:
-                    reward = calculate_reward(prev_state, current_state)
+                    reward = calculate_reward(prev_state, current_state, prev_raw_state, current_raw_state)
                     episode_reward += reward
                     
-                    agent.remember(prev_state, prev_action, reward, current_state, False)
+                    # Print reward details every 50 steps for debugging
+                    if step_count % 50 == 0:
+                        print(f"Step {step_count}: Reward = {reward:.3f}, Speed = {current_state[1]*3.6:.1f}km/h, TrackPos = {current_state[3]:.3f}")
+                    
+                    # Check for crash/stuck conditions (apply penalties but don't end episode)
+                    done = False
+                    if abs(current_state[3]) > 1.0:  # Off track
+                        reward -= 5.0  # Crash penalty (but continue episode)
+                        if step_count % 50 == 0:  # Don't spam the message
+                            print(f"OFF TRACK: TrackPos = {current_state[3]:.3f}")
+                    elif current_raw_state.get('damage', 0) > 50:  # Too much damage
+                        reward -= 10.0
+                        if step_count % 50 == 0:
+                            print(f"DAMAGED: Damage = {current_raw_state.get('damage', 0)}")
+                    elif step_count > 100 and abs(current_state[1]) < 0.1:  # Stuck (not moving)
+                        reward -= 2.0
+                        if step_count % 50 == 0:
+                            print("STUCK: Not moving!")
+                    
+                    # Only mark as done at the very end of episode
+                    if step_count >= max_steps - 1:
+                        done = True
+                    
+                    agent.remember(prev_state, prev_action, reward, current_state, done)
                     
                     # Train every 4 steps
                     if step_count % 4 == 0:
@@ -320,6 +402,7 @@ def main():
                         agent.update_target_network()
                 
                 prev_state = current_state
+                prev_raw_state = current_raw_state
                 prev_action = action_idx
                 step_count += 1
             

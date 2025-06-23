@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Run a trained DQN model for inspection/evaluation.
-Usage: python run_dqn_model.py [model_path]
+Run a trained continuous DQN model for evaluation.
+Usage: python run_continuous_model.py [model_path]
 """
 import socket
 import select
@@ -13,20 +13,39 @@ import sys
 import os
 
 
-class DQN(nn.Module):
-    """Simple DQN network."""
-    def __init__(self, state_size=29, action_size=14, hidden_size=64):
-        super(DQN, self).__init__()
-        self.network = nn.Sequential(
+class ContinuousDQN(nn.Module):
+    """DQN network with continuous steering output."""
+    def __init__(self, state_size=29, hidden_size=128):
+        super(ContinuousDQN, self).__init__()
+        
+        # Shared feature extractor
+        self.features = nn.Sequential(
             nn.Linear(state_size, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
+            nn.ReLU()
+        )
+        
+        # Steering head (continuous: -1 to +1)
+        self.steering_head = nn.Sequential(
+            nn.Linear(hidden_size, 32),
             nn.ReLU(),
-            nn.Linear(hidden_size, action_size)
+            nn.Linear(32, 1),
+            nn.Tanh()  # Output in [-1, 1]
+        )
+        
+        # Speed action head (discrete: accelerate, coast, brake)
+        self.speed_head = nn.Sequential(
+            nn.Linear(hidden_size, 32),
+            nn.ReLU(),
+            nn.Linear(32, 3)  # [accel, coast, brake]
         )
     
     def forward(self, x):
-        return self.network(x)
+        features = self.features(x)
+        steering = self.steering_head(features)
+        speed_q = self.speed_head(features)
+        return steering, speed_q
 
 
 def parse_sensors(sensor_string):
@@ -83,7 +102,7 @@ def parse_sensors(sensor_string):
     # Ensure exactly 29 features
     while len(vector) < 29:
         vector.append(0.0)
-    vector = vector[:29]  # Truncate if too long
+    vector = vector[:29]
     
     return np.array(vector, dtype=np.float32), state
 
@@ -94,67 +113,34 @@ def create_control_string(steer, accel, brake, gear=1):
 
 
 def load_model(model_path):
-    """Load trained DQN model."""
+    """Load trained continuous DQN model."""
     if not os.path.exists(model_path):
         print(f"Error: Model file {model_path} not found!")
         return None
     
-    model = DQN()
+    model = ContinuousDQN()
     model.load_state_dict(torch.load(model_path, map_location='cpu'))
     model.eval()
-    print(f"Loaded model from {model_path}")
+    print(f"Loaded continuous model from {model_path}")
     return model
 
 
 def run_model(model_path, max_steps=5000, verbose=False):
-    """Run the trained model."""
+    """Run the trained continuous model."""
     
     # Load model
     model = load_model(model_path)
     if model is None:
         return
     
-    # Improved discrete actions: [steer, accel, brake] (must match trainer)
-    actions = [
-        # High-speed actions
-        [-0.3, 1.0, 0.0],   # Left + full accel
-        [-0.1, 1.0, 0.0],   # Slight left + full accel
-        [0.0, 1.0, 0.0],    # Straight + full accel
-        [0.1, 1.0, 0.0],    # Slight right + full accel
-        [0.3, 1.0, 0.0],    # Right + full accel
-        
-        # Medium-speed actions
-        [-0.5, 0.5, 0.0],   # Sharp left + medium accel
-        [0.0, 0.5, 0.0],    # Straight + medium accel
-        [0.5, 0.5, 0.0],    # Sharp right + medium accel
-        
-        # Braking actions
-        [-0.2, 0.0, 0.5],   # Left + brake
-        [0.0, 0.0, 0.5],    # Straight + brake
-        [0.2, 0.0, 0.5],    # Right + brake
-        
-        # Emergency actions
-        [-0.8, 0.0, 1.0],   # Sharp left + full brake
-        [0.8, 0.0, 1.0],    # Sharp right + full brake
-        [0.0, 0.0, 0.0],    # Coast
+    # Speed actions: [accel, brake]
+    speed_actions = [
+        [1.0, 0.0],    # Full accelerate
+        [0.0, 0.0],    # Coast
+        [0.0, 0.8],    # Brake
     ]
     
-    action_names = [
-        "Left + full accel",
-        "Slight left + full accel", 
-        "Straight + full accel",
-        "Slight right + full accel",
-        "Right + full accel",
-        "Sharp left + medium accel",
-        "Straight + medium accel",
-        "Sharp right + medium accel",
-        "Left + brake",
-        "Straight + brake",
-        "Right + brake",
-        "Sharp left + full brake",
-        "Sharp right + full brake",
-        "Coast"
-    ]
+    speed_names = ["Accelerate", "Coast", "Brake"]
     
     # Connection parameters
     host = "localhost"
@@ -166,7 +152,7 @@ def run_model(model_path, max_steps=5000, verbose=False):
     server_address = (host, port)
     
     print(f"Connecting to {host}:{port}")
-    print(f"Running model evaluation for {max_steps} steps...")
+    print(f"Running continuous model evaluation for {max_steps} steps...")
     print("Press Ctrl+C to stop\n")
     
     try:
@@ -231,10 +217,14 @@ def run_model(model_path, max_steps=5000, verbose=False):
             # Get action from model
             with torch.no_grad():
                 state_tensor = torch.FloatTensor(state_vector).unsqueeze(0)
-                q_values = model(state_tensor)
-                action_idx = torch.argmax(q_values).item()
+                steering_out, speed_q = model(state_tensor)
+                
+                steering = float(steering_out[0].item())
+                speed_action_idx = int(torch.argmax(speed_q[0]).item())
             
-            steer, accel, brake = actions[action_idx]
+            # Clamp steering to valid range
+            steering = max(-1.0, min(1.0, steering))
+            accel, brake = speed_actions[speed_action_idx]
             
             # Simple gear logic
             rpm = state_dict.get('rpm', 0)
@@ -247,7 +237,7 @@ def run_model(model_path, max_steps=5000, verbose=False):
                 gear = max(1, current_gear)
             
             # Create and send control command
-            control = create_control_string(steer, accel, brake, gear)
+            control = create_control_string(steering, accel, brake, gear)
             sock.sendto(control.encode(), server_address)
             
             # Track progress
@@ -260,16 +250,16 @@ def run_model(model_path, max_steps=5000, verbose=False):
             if verbose or step_count % 100 == 0:
                 speed = state_dict.get('speedX', 0) * 3.6  # Convert to km/h
                 track_pos = state_dict.get('trackPos', 0)
+                angle = state_dict.get('angle', 0)
                 damage = state_dict.get('damage', 0)
                 
-                print(f"Step {step_count:4d}: Action={action_names[action_idx]:20s} "
-                      f"Speed={speed:6.1f}km/h TrackPos={track_pos:6.3f} "
+                print(f"Step {step_count:4d}: Steer={steering:6.3f} Speed={speed_names[speed_action_idx]:10s} "
+                      f"Speed={speed:6.1f}km/h Pos={track_pos:6.3f} Angle={angle:6.3f} "
                       f"Distance={total_distance:7.1f}m Damage={damage:3.0f}")
                 
                 if verbose:
-                    print(f"          Q-values: {q_values[0].numpy()}")
-                    print(f"          State: angle={state_dict.get('angle', 0):.3f} "
-                          f"rpm={state_dict.get('rpm', 0):.0f} gear={gear}")
+                    print(f"          Speed Q-values: {speed_q[0].numpy()}")
+                    print(f"          Steering output: {steering:.3f}")
                     track_sensors = state_dict.get('track', [])
                     if track_sensors:
                         min_dist = min(track_sensors)
@@ -281,7 +271,9 @@ def run_model(model_path, max_steps=5000, verbose=False):
         print(f"\nEvaluation completed!")
         print(f"Total steps: {step_count}")
         print(f"Total distance: {total_distance:.1f}m")
-        print(f"Average speed: {total_distance/max(step_count*0.02, 1)*3.6:.1f}km/h")
+        if step_count > 0:
+            avg_speed = (total_distance / (step_count * 0.02)) * 3.6  # Convert to km/h
+            print(f"Average speed: {avg_speed:.1f}km/h")
         
     except KeyboardInterrupt:
         print("\nEvaluation interrupted by user")
@@ -295,13 +287,13 @@ def main():
     """Main function."""
     import argparse
     
-    parser = argparse.ArgumentParser(description="Run trained DQN model for evaluation")
-    parser.add_argument("model_path", nargs="?", default="models/dqn_simple_final.pth",
-                       help="Path to trained model (default: models/dqn_simple_final.pth)")
+    parser = argparse.ArgumentParser(description="Run trained continuous DQN model")
+    parser.add_argument("model_path", nargs="?", default="models/continuous_dqn_final.pth",
+                       help="Path to trained model (default: models/continuous_dqn_final.pth)")
     parser.add_argument("--steps", type=int, default=5000,
                        help="Maximum steps to run (default: 5000)")
     parser.add_argument("--verbose", "-v", action="store_true",
-                       help="Show detailed output including Q-values")
+                       help="Show detailed output")
     
     args = parser.parse_args()
     
@@ -310,7 +302,7 @@ def main():
         print("\nAvailable models:")
         models_dir = "models"
         if os.path.exists(models_dir):
-            for f in os.listdir(models_dir):
+            for f in sorted(os.listdir(models_dir)):
                 if f.endswith('.pth'):
                     print(f"  {os.path.join(models_dir, f)}")
         else:
