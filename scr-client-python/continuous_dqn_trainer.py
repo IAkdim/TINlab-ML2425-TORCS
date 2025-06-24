@@ -17,7 +17,7 @@ import os
 
 class ContinuousDQN(nn.Module):
     """DQN network with continuous steering output."""
-    def __init__(self, state_size=29, hidden_size=128):
+    def __init__(self, state_size=35, hidden_size=128):
         super(ContinuousDQN, self).__init__()
         
         # Shared feature extractor
@@ -52,7 +52,7 @@ class ContinuousDQN(nn.Module):
 
 class HybridDQNAgent:
     """Hybrid agent with continuous steering + discrete speed control."""
-    def __init__(self, state_size=29, lr=0.001):
+    def __init__(self, state_size=35, lr=0.001):
         self.state_size = state_size
         self.memory = deque(maxlen=15000)
         self.epsilon = 1.0
@@ -81,8 +81,14 @@ class HybridDQNAgent:
         """Get hybrid action: continuous steering + discrete speed."""
         
         if training and np.random.random() <= self.epsilon:
-            # Random exploration
-            steering = np.random.uniform(-1.0, 1.0)
+            # Guided exploration using heuristic steering + some randomness
+            heuristic_steering = self._get_heuristic_steering(state)
+            
+            if np.random.random() < 0.7:  # 70% heuristic, 30% random
+                steering = heuristic_steering + np.random.normal(0, 0.2)  # Add noise
+            else:
+                steering = np.random.uniform(-1.0, 1.0)  # Pure random
+                
             speed_action = random.randrange(3)
         else:
             # Policy action
@@ -93,6 +99,35 @@ class HybridDQNAgent:
                 speed_action = int(torch.argmax(speed_q[0]).item())
         
         return steering, speed_action
+    
+    def _get_heuristic_steering(self, state):
+        """Calculate heuristic steering based on track sensors."""
+        # Extract key features
+        angle = state[0]           # angle to track
+        track_pos = state[3]       # position on track
+        left_min = state[8]        # closest left obstacle
+        right_min = state[9]       # closest right obstacle
+        steering_bias = state[12]  # left_min - right_min
+        
+        # Basic steering logic
+        steering = 0.0
+        
+        # 1. Correct track position (get back to center)
+        if abs(track_pos) > 0.1:
+            steering -= track_pos * 2.0  # Steer toward center
+        
+        # 2. Correct angle to track
+        steering -= angle * 1.0
+        
+        # 3. Use track sensors for wall avoidance
+        if left_min < 0.3 or right_min < 0.3:  # Close to walls
+            steering += steering_bias * 3.0  # Steer away from closer wall
+        
+        # 4. Anticipate turns based on sensor asymmetry
+        steering += steering_bias * 0.5
+        
+        # Clamp to valid range
+        return max(-1.0, min(1.0, steering))
     
     def replay(self, batch_size=32):
         if len(self.memory) < batch_size:
@@ -162,62 +197,55 @@ def parse_sensors(sensor_string):
         else:
             i += 1
     
-    # Create enhanced state vector with better track sensor features
+    # Create enhanced state vector focusing on steering cues
     angle = state.get('angle', 0)
     speed_x = state.get('speedX', 0)
     track_pos = state.get('trackPos', 0)
     
-    # Get 19 track sensors
+    # Get 19 track sensors and process them for steering cues
     track = state.get('track', [200] * 19)
     track_sensors = []
     for i in range(19):
         if i < len(track) and track[i] > 0:
-            track_sensors.append(min(track[i] / 200.0, 1.0))
+            track_sensors.append(min(track[i] / 50.0, 1.0))  # Closer normalization for better sensitivity
         else:
             track_sensors.append(1.0)
     
-    # Calculate track sensor derivatives (steering cues)
-    left_sensors = track_sensors[:9]   # Left side sensors
-    right_sensors = track_sensors[10:] # Right side sensors
-    front_sensor = track_sensors[9]    # Front sensor
+    # Calculate steering cues from track sensors
+    left_sensors = track_sensors[:9]   # Sensors 0-8 (left side)
+    right_sensors = track_sensors[10:] # Sensors 10-18 (right side)  
+    front_sensor = track_sensors[9]    # Sensor 9 (straight ahead)
     
     left_min = min(left_sensors) if left_sensors else 1.0
     right_min = min(right_sensors) if right_sensors else 1.0
+    left_avg = sum(left_sensors) / len(left_sensors) if left_sensors else 1.0
+    right_avg = sum(right_sensors) / len(right_sensors) if right_sensors else 1.0
     
-    # Create enhanced feature vector
+    # Create state vector with exactly 35 features
     vector = [
-        # Basic state
+        # Basic driving state (7 features)
         angle,                              # 0: angle to track
         speed_x,                           # 1: forward speed
-        state.get('speedY', 0),            # 2: lateral speed
+        state.get('speedY', 0),            # 2: lateral speed  
         track_pos,                         # 3: position on track
         state.get('rpm', 0) / 10000.0,     # 4: normalized RPM
         state.get('gear', 1),              # 5: current gear
         state.get('damage', 0) / 100.0,    # 6: normalized damage
         
-        # Enhanced track features
-        front_sensor,                      # 7: distance ahead
-        left_min,                          # 8: minimum left distance
-        right_min,                         # 9: minimum right distance
-        left_min - right_min,              # 10: left-right balance (-1=left closer, +1=right closer)
+        # Key steering cues (8 features)
+        front_sensor,                      # 7: distance straight ahead
+        left_min,                          # 8: closest obstacle on left
+        right_min,                         # 9: closest obstacle on right
+        left_avg,                          # 10: average left clearance
+        right_avg,                         # 11: average right clearance
+        left_min - right_min,              # 12: steering bias (-1=steer right, +1=steer left)
+        (left_avg - right_avg),            # 13: track curvature estimate
+        abs(track_pos) + abs(angle),       # 14: total misalignment
         
-        # Track curvature estimation
-        (track_sensors[6] - track_sensors[12]) if len(track_sensors) >= 13 else 0,  # 11: left-right difference
-        (track_sensors[3] - track_sensors[15]) if len(track_sensors) >= 16 else 0,  # 12: wider left-right difference
-        
-        # Raw track sensors (normalized)
-        *track_sensors,                    # 13-31: all 19 track sensors
-        
-        # Additional features
-        state.get('speedZ', 0),            # 32: vertical speed
-        abs(angle),                        # 33: absolute angle (misalignment)
-        abs(track_pos),                    # 34: distance from center
+        # Critical track sensors (20 features: keep all 19 + 1 padding)
+        *track_sensors,                    # 15-33: all 19 track sensors
+        0.0,                               # 34: padding to reach 35
     ]
-    
-    # Ensure exactly 29 features
-    while len(vector) < 29:
-        vector.append(0.0)
-    vector = vector[:29]
     
     return np.array(vector, dtype=np.float32), state
 

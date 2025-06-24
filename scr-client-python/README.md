@@ -1,13 +1,15 @@
 # SCR Python Client
 
-Python implementation of the SCR (Simulated Car Racing) client with machine learning capabilities.
+Python implementation of the SCR (Simulated Car Racing) client with advanced machine learning capabilities.
 
 ## Features
 
 - **Rule-based driver** - Python port of the C++ SimpleDriver
-- **ML driver framework** - Neural networks and reinforcement learning
+- **Supervised learning** - Train from expert demonstrations (RECOMMENDED)
+- **Reinforcement learning** - DQN with continuous/discrete control
+- **Multiple training approaches** - From careful driving to aggressive racing
+- **Expert data included** - CSV files from last year's winning bot
 - **OpenAI Gym environment** - Standard RL interface
-- **Multiple ML algorithms** - Support for DQN, policy networks, etc.
 - **Compatible interface** - Same command-line arguments as C++ version
 
 ## Installation
@@ -63,22 +65,33 @@ while not done:
 
 ```
 scr-client-python/
-├── src/                    # Core framework
-│   ├── scr_client.py      # UDP client implementation
-│   ├── car_state.py       # Sensor data handling
-│   ├── car_control.py     # Control commands
-│   ├── base_driver.py     # Driver interface
-│   └── simple_parser.py   # Protocol parsing
-├── drivers/               # Driver implementations
-│   ├── simple_driver.py   # Rule-based driver (C++ port)
-│   └── ml_driver.py       # ML driver framework
-├── environments/          # RL environments
-│   └── torcs_env.py       # OpenAI Gym wrapper
-├── examples/              # Example scripts
-├── tests/                 # Unit tests
-├── client.py              # Main entry point
-├── requirements.txt       # Dependencies
-└── README.md             # This file
+├── src/                         # Core framework
+│   ├── scr_client.py           # UDP client implementation
+│   ├── car_state.py            # Sensor data handling
+│   ├── car_control.py          # Control commands
+│   ├── base_driver.py          # Driver interface
+│   └── simple_parser.py        # Protocol parsing
+├── drivers/                     # Driver implementations
+│   ├── simple_driver.py        # Rule-based driver (C++ port)
+│   └── ml_driver.py            # ML driver framework
+├── environments/                # RL environments
+│   └── torcs_env.py            # OpenAI Gym wrapper
+├── trainers/                    # ML training scripts
+│   ├── supervised_trainer.py   # Behavioral cloning from expert data
+│   ├── simple_dqn_trainer.py   # Basic DQN implementation
+│   ├── continuous_dqn_trainer.py # Hybrid continuous control
+│   └── careful_dqn_trainer.py  # Conservative speed control
+├── evaluators/                  # Model evaluation scripts
+│   ├── run_expert_model.py     # Run supervised learning models
+│   ├── run_dqn_model.py        # Run DQN models
+│   ├── run_continuous_model.py # Run continuous control models
+│   └── run_careful_model.py    # Run careful DQN models
+├── train_data/                  # Expert demonstration data
+│   └── train_data/             # CSV files from last year's winning bot
+├── models/                      # Saved model files
+├── client.py                   # Main entry point
+├── requirements.txt            # Dependencies
+└── README.md                  # This file
 ```
 
 ## Driver Types
@@ -95,36 +108,55 @@ scr-client-python/
 - **Training support**: Experience replay, epsilon-greedy exploration
 - **Model persistence**: Save/load trained models
 
-## ML Training Examples
+## Training Options
 
-### Train DQN Agent
+### 1. Supervised Learning (RECOMMENDED)
 
-```python
-import os
-os.environ['DRIVER_TYPE'] = 'ml'
-os.environ['ML_MODEL_TYPE'] = 'dqn'
-os.environ['ML_TRAINING'] = 'true'
-os.environ['ML_MODEL_PATH'] = 'models/dqn_driver.pth'
+Train from expert demonstrations using behavioral cloning:
 
-# Run training
-# python client.py host:localhost port:3001 maxEpisodes:50 maxSteps:2000
+```bash
+# Train from expert CSV data
+python supervised_trainer.py
+
+# Run trained expert model
+python run_expert_model.py models/expert_driving_best.pth
 ```
 
-### Use Stable-Baselines3
+**Advantages:**
+- Uses proven winning strategies from last year's champion
+- Fast training (~200 epochs)
+- Stable, expert-level performance
+- Includes data from multiple tracks
 
-```python
-from environments.torcs_env import TORCSEnv
-from stable_baselines3 import PPO
+### 2. Reinforcement Learning (Advanced)
 
-# Create environment
-env = TORCSEnv()
+Train using various DQN approaches:
 
-# Train agent
-model = PPO("MlpPolicy", env, verbose=1)
-model.learn(total_timesteps=100000)
+```bash
+# Basic DQN with discrete actions
+python simple_dqn_trainer.py
 
-# Save model
-model.save("ppo_torcs_driver")
+# Continuous control (hybrid steering + discrete speed)
+python continuous_dqn_trainer.py
+
+# Conservative driving (safety-first)
+python careful_dqn_trainer.py
+```
+
+**Note:** RL training requires significant time and hyperparameter tuning.
+
+### 3. Evaluation Scripts
+
+Test any trained model:
+
+```bash
+# Run expert model (supervised learning)
+python run_expert_model.py models/expert_driving_best.pth --verbose
+
+# Run DQN models
+python run_dqn_model.py models/dqn_model.pth
+python run_continuous_model.py models/continuous_dqn_model.pth
+python run_careful_model.py models/careful_dqn_model.pth
 ```
 
 ## Configuration
@@ -148,45 +180,68 @@ model.save("ppo_torcs_driver")
 
 ### Observation Space
 
-31-dimensional vector:
-- Car dynamics (7): angle, speeds, track position, RPM, gear, damage
-- Track sensors (19): distance to track edges
-- Opponent sensors (5): closest opponents
+**Expert Model (Supervised Learning)**:
+21-dimensional vector:
+- Speed, track position, angle to track axis
+- 18 track edge sensors (distance to track boundaries)
+
+**DQN Models**:
+29-35 dimensional vectors (varies by trainer):
+- Car dynamics: angle, speeds, track position, RPM, gear, damage
+- Track sensors: 19 distance measurements to track edges
+- Additional features: steering cues, velocity vectors (continuous models)
 
 ## Performance Comparison
 
-| Driver Type | Language | Lines of Code | Training | Performance |
-|-------------|----------|---------------|----------|-------------|
-| SimpleDriver | C++ | ~300 | No | Baseline |
-| SimpleDriver | Python | ~200 | No | Same as C++ |
-| Neural Network | Python | ~100 | Yes | Variable |
-| DQN | Python | ~150 | Yes | Improves over time |
+| Approach | Training Time | Sample Efficiency | Performance | Stability |
+|----------|---------------|-------------------|-------------|-----------|
+| **Expert (Supervised)** | ~30 min | ⭐⭐⭐⭐⭐ | Expert-level | ⭐⭐⭐⭐⭐ |
+| Careful DQN | ~2-4 hours | ⭐⭐⭐ | Conservative | ⭐⭐⭐⭐ |
+| Continuous DQN | ~4-8 hours | ⭐⭐ | Variable | ⭐⭐⭐ |
+| Simple DQN | ~6-12 hours | ⭐ | Unstable | ⭐⭐ |
+| Rule-based | None | N/A | Baseline | ⭐⭐⭐⭐⭐ |
 
-## Advanced Usage
+**Recommendation**: Start with supervised learning using expert data for best results.
 
-### Custom Reward Function
+## Expert Data Format
+
+The included training data (`train_data/train_data/*.csv`) contains:
+
+**Actions (3 columns):**
+- `ACCELERATION`: [0, 1] - Throttle input
+- `BRAKE`: [0, 1] - Brake input  
+- `STEERING`: [-1, 1] - Steering angle (left negative, right positive)
+
+**Sensors (21 columns):**
+- `SPEED`: Current speed (m/s)
+- `TRACK_POSITION`: Position relative to track center [-1, 1]
+- `ANGLE_TO_TRACK_AXIS`: Car orientation relative to track direction
+- `TRACK_EDGE_0` to `TRACK_EDGE_17`: Distance to track boundaries (18 sensors)
+
+Data extracted from last year's winning bot across multiple tracks.
+Video reference: https://www.youtube.com/watch?v=pX-UDQdtmBM
+
+## Advanced Customization
+
+### Creating Custom Trainers
 
 ```python
-def custom_reward(self, current_state, prev_state):
-    reward = 0.0
-    # Your custom reward logic
-    return reward
+# Extend base trainer classes
+from trainers.supervised_trainer import ExpertDrivingNet
 
-# Override in MLDriver
-driver.calculate_reward = custom_reward
-```
-
-### Custom Neural Network
-
-```python
-class CustomNN(nn.Module):
+class CustomTrainer:
     def __init__(self):
-        super().__init__()
-        # Your custom architecture
-        
-# Use in MLDriver
-driver.model = CustomNN()
+        self.model = ExpertDrivingNet(input_size=21, hidden_size=512)
+        # Your custom training logic
 ```
+
+### Model Architecture Options
+
+All trainers support customizable neural networks with different:
+- Hidden layer sizes (128, 256, 512)
+- Dropout rates (0.1, 0.2, 0.3)
+- Activation functions (ReLU, LeakyReLU, Swish)
+- Output heads (separate vs. shared)
 
 ## Debugging
 
@@ -217,9 +272,22 @@ writer.add_scalar('Reward/Episode', episode_reward, episode)
 
 ## Known Issues
 
-- First UDP connection may timeout (retry once)
-- Gym environment requires server restart between episodes
-- DQN training may need hyperparameter tuning for specific tracks
+- First UDP connection may timeout (retry once) 
+- TORCS server may require restart between long training sessions
+- DQN models require significant hyperparameter tuning for optimal performance
+- Sensor angles must match exactly: `[-90, -75, -60, -45, -30, -20, -15, -10, -5, 0, 5, 10, 15, 20, 30, 45, 60, 75, 90]`
+
+## Getting Started
+
+**Quick Start (Recommended):**
+1. Train expert model: `python supervised_trainer.py`
+2. Test performance: `python run_expert_model.py models/expert_driving_best.pth --verbose`
+3. Compare with rule-based: `python client.py host:localhost port:3001`
+
+**For Research/Experimentation:**
+1. Try different DQN approaches in `trainers/` directory
+2. Modify reward functions and network architectures
+3. Collect your own training data using successful runs
 
 ## Contributing
 

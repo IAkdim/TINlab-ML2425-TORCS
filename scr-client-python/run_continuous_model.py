@@ -15,7 +15,7 @@ import os
 
 class ContinuousDQN(nn.Module):
     """DQN network with continuous steering output."""
-    def __init__(self, state_size=29, hidden_size=128):
+    def __init__(self, state_size=35, hidden_size=128):
         super(ContinuousDQN, self).__init__()
         
         # Shared feature extractor
@@ -73,36 +73,55 @@ def parse_sensors(sensor_string):
         else:
             i += 1
     
-    # Create state vector with exactly 29 features
-    vector = [
-        state.get('angle', 0),
-        state.get('speedX', 0),
-        state.get('speedY', 0),
-        state.get('trackPos', 0),
-        state.get('rpm', 0) / 10000.0,  # Normalize
-        state.get('gear', 1),
-        state.get('damage', 0) / 100.0,  # Normalize
-    ]
+    # Create enhanced state vector focusing on steering cues (same as trainer)
+    angle = state.get('angle', 0)
+    speed_x = state.get('speedX', 0)
+    track_pos = state.get('trackPos', 0)
     
-    # Add 19 track sensors (normalized)
+    # Get 19 track sensors and process them for steering cues
     track = state.get('track', [200] * 19)
+    track_sensors = []
     for i in range(19):
-        if i < len(track):
-            vector.append(min(track[i] / 200.0, 1.0))  # Normalize to [0,1]
+        if i < len(track) and track[i] > 0:
+            track_sensors.append(min(track[i] / 50.0, 1.0))  # Closer normalization for better sensitivity
         else:
-            vector.append(1.0)
+            track_sensors.append(1.0)
     
-    # Add 3 more features to reach 29
-    vector.extend([
-        state.get('speedZ', 0),  # speedZ
-        state.get('fuel', 94) / 100.0,  # normalized fuel
-        state.get('racePos', 1) / 10.0,  # normalized race position
-    ])
+    # Calculate steering cues from track sensors
+    left_sensors = track_sensors[:9]   # Sensors 0-8 (left side)
+    right_sensors = track_sensors[10:] # Sensors 10-18 (right side)  
+    front_sensor = track_sensors[9]    # Sensor 9 (straight ahead)
     
-    # Ensure exactly 29 features
-    while len(vector) < 29:
-        vector.append(0.0)
-    vector = vector[:29]
+    left_min = min(left_sensors) if left_sensors else 1.0
+    right_min = min(right_sensors) if right_sensors else 1.0
+    left_avg = sum(left_sensors) / len(left_sensors) if left_sensors else 1.0
+    right_avg = sum(right_sensors) / len(right_sensors) if right_sensors else 1.0
+    
+    # Create state vector with exactly 35 features
+    vector = [
+        # Basic driving state (7 features)
+        angle,                              # 0: angle to track
+        speed_x,                           # 1: forward speed
+        state.get('speedY', 0),            # 2: lateral speed  
+        track_pos,                         # 3: position on track
+        state.get('rpm', 0) / 10000.0,     # 4: normalized RPM
+        state.get('gear', 1),              # 5: current gear
+        state.get('damage', 0) / 100.0,    # 6: normalized damage
+        
+        # Key steering cues (8 features)
+        front_sensor,                      # 7: distance straight ahead
+        left_min,                          # 8: closest obstacle on left
+        right_min,                         # 9: closest obstacle on right
+        left_avg,                          # 10: average left clearance
+        right_avg,                         # 11: average right clearance
+        left_min - right_min,              # 12: steering bias (-1=steer right, +1=steer left)
+        (left_avg - right_avg),            # 13: track curvature estimate
+        abs(track_pos) + abs(angle),       # 14: total misalignment
+        
+        # Critical track sensors (20 features: keep all 19 + 1 padding)
+        *track_sensors,                    # 15-33: all 19 track sensors
+        0.0,                               # 34: padding to reach 35
+    ]
     
     return np.array(vector, dtype=np.float32), state
 
